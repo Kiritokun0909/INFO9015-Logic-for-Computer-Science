@@ -53,8 +53,83 @@ def sudoku_print(myfile, sudoku):
 # here you are encouraged to define your own functions !
 from pysat.solvers import Glucose3
 
+VARIABLE_COUNT = 0
+def getNewVariable():
+    global VARIABLE_COUNT
+    VARIABLE_COUNT += 1
+    return VARIABLE_COUNT
+
+# CONSTRAINT For SUDOKU
+# 1. Each box has 1 number
+def one_number_for_each_box(solver, variables, size, N):
+    # 1.1. Each box has AT LEAST 1 number
+    # => p(i,j,k)
+    for i in range(size):
+        for j in range(size):
+            solver.add_clause(variables[i][j])
+
+    # 1.2. Each box has AT MOST 1 number
+    # => not( p[i][j][k1] /\ p[i][j][k2] )
+    # => not p[i][j][k1] \/ not p[i][j][k2]
+    for i in range(size):
+        for j in range(size):
+            for k1 in range(N):
+                for k2 in range(k1+1, N):
+                    solver.add_clause([-variables[i][j][k1], -variables[i][j][k2]])
+
+    return
+
+# 2. Box at the same row, column cannot have the same number
+def different_number_for_box_at_same_row_column(solver, variables, size, N):
+    # 2.1. Box at the same row cannot have the same number
+    # not( p[i][j1][k] /\ p[i][j2][k] )
+    # => not p[i][j1][k] \/ not p[i][j2][k]
+    for i in range(size):
+        for j1 in range(size):
+            for j2 in range(j1+1,size):
+                for k in range(N):
+                    solver.add_clause([-variables[i][j1][k], -variables[i][j2][k]])
+
+    # 2.2. Box at the same column cannot have the same number
+    # not( p[i1][j][k] /\ p[i2][j][k] )
+    # => not p[i1][j][k] \/ not p[i2][j][k]
+    for i1 in range(size):
+        for i2 in range(i1+1, size):
+            for j in range(size):
+                for k in range(N):
+                    solver.add_clause([-variables[i1][j][k], -variables[i2][j][k]])
+
+    return
+
+# 3. Box in same square cannot have the same number
+def different_number_for_box_in_same_square(solver, variables, size, k):
+    s = int(size ** 0.5)  # square side: 2 for 4x4, 3 for 9x9, 4 for 16x16, 5 for 25x25
+
+    for bi in range(s):          # which block row
+        for bj in range(s):      # which block column
+            # all cells of this square
+            cells = [(bi * s + di, bj * s + dj) for di in range(s) for dj in range(s)]
+            # print(cells)
+
+            for a in range(len(cells)):
+                for b in range(a + 1, len(cells)):
+                    i1, j1 = cells[a]
+                    i2, j2 = cells[b]
+                    for n in range(k):
+                        solver.add_clause([-variables[i1][j1][n], -variables[i2][j2][n]])
+
+    return
 
 
+def decode(model, variables, size, N):
+    true_vars = set(v for v in model if v > 0)
+    grid = [[0] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(size):
+            for k in range(N):
+                if variables[i][j][k] in true_vars:
+                    grid[i][j] = k + 1
+    return grid
 
 
 from enum import Enum
@@ -94,14 +169,63 @@ if mode == Mode.SOLVE or mode == Mode.UNIQUE:
     filename = str(sys.argv[2])
     sudoku = sudoku_read(filename)
     size = len(sudoku)
-    
+
     # your code to solve the sudoku
-    print(f'Sudoku shape: {size}x{len(sudoku[0])}',)
+    print(f'Sudoku shape: {size}x{len(sudoku[0])}', )
+
+    #region Initializing SAT SOLVER
+    N = size
+    solver = Glucose3()
+
+    # Initializing VARIABLES
+    VARIABLES = [[[getNewVariable() for k in range(N)] for j in range(size)] for i in range(size)]
+    print(f'NUM VARIABLES: {VARIABLE_COUNT}')
+    #endregion
+
+    #region Generate rules for sudoku
+    one_number_for_each_box(solver, VARIABLES, size, N)
+    result = solver.solve()
+    # print('First result: ', result)
+
+    different_number_for_box_at_same_row_column(solver, VARIABLES, size, N)
+    result = solver.solve()
+    # print('Second result: ', result)
+
+    different_number_for_box_in_same_square(solver, VARIABLES, size, N)
+    # result = solver.solve()
+    # print('Third result: ', result)
+    #endregion
+
+    #region Add constant value from sudoku file into rules
+    for i in range(size):
+        for j in range(size):
+            k = sudoku[i][j]
+            if k != 0:
+                solver.add_clause([VARIABLES[i][j][k - 1]])
+    #endregion
+
+    #region Solving sudoku
+    if solver.solve():
+        grid = decode(solver.get_model(), VARIABLES, size, N)
+        sudoku_print(sys.stdout, grid)
+    else:
+        sudoku_print(sys.stdout, [])  # "impossible sudoku"
+    #endregion
 
     if sudoku != [] and mode == Mode.UNIQUE:
         
         # your code to determine whether the solution is unique
-        pass
+        # forbid this exact solution: at least one cell must differ
+        blocking = [-VARIABLES[i][j][grid[i][j] - 1]
+                    for i in range(size) for j in range(size)]
+        solver.add_clause(blocking)
+
+        if solver.solve():
+            print("The solution is NOT unique. Another solution:")
+            grid2 = decode(solver.get_model(), VARIABLES, size, N)
+            sudoku_print(sys.stdout, grid2)
+        else:
+            print("The solution is unique.")
     
 elif mode == Mode.CREATE:
     size = int(sys.argv[2])
